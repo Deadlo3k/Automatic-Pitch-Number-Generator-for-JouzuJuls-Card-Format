@@ -1,0 +1,6 @@
+{
+    "reading_field": "Reading",
+    "pitch_field": "Pitch Number",
+    "expression_fields": ["Expression", "Word", "Vocabulary", "単語", "Front"],
+    "overwrite_existing": false
+}

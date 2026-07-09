@@ -1,0 +1,12 @@
+# Runtime-downloaded pitch accent datasets (not owned by this project)
+# These are fetched automatically on first run — do not commit them.
+accents.txt
+pitch_accent_wiktionary.json
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Anki add-on metadata (user-specific)
+meta.json
