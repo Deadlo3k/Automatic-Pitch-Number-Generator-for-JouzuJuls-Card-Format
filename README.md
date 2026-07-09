@@ -1,6 +1,6 @@
 # Pitch Fill
 
-An Anki add-on that automatically fills the **Pitch Number** field on Japanese vocabulary cards by looking up each word's pitch accent in a bundled database.
+An Anki add-on that automatically fills the **Pitch Number** field on Japanese vocabulary cards using the note type created by **[JouzuJuls](https://www.youtube.com/@JouzuJuls)** (YouTuber). This add-on is designed specifically for that note type and is not guaranteed to work with other card formats.
 
 ---
 
