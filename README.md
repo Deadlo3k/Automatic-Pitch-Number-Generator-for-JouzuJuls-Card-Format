@@ -80,6 +80,14 @@ Neither dataset is bundled with this repository. They are fetched at runtime and
 
 ---
 
+## Download
+
+**[Download the latest release (.ankiaddon)](https://github.com/Deadlo3k/Automatic-Pitch-Number-Generator-for-JouzuJuls-Card-Format/releases/latest/download/pitch-fill-v1.0.0.ankiaddon)**
+
+Double-click the downloaded file and Anki will install it automatically. No manual folder copying required.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Fork it, improve it, and make it your own.
