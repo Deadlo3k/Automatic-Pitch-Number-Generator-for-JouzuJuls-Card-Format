@@ -16,6 +16,7 @@ E  Skip / guard behaviour
 F  Wiktionary supplement fallback
 G  Pitch annotation stripping
 H  Ruby HTML stripping (fixes doubled-reading bug)
+I  Lookup bug regressions + inline pitch override
 """
 
 import os
@@ -43,6 +44,7 @@ _strip_html          = _mod._strip_html
 _strip_html_reading  = _mod._strip_html_reading
 _extract_reading     = _mod._extract_reading
 _extract_expression  = _mod._extract_expression
+_extract_inline_pitch = _mod._extract_inline_pitch
 DATASET_URL          = _mod.DATASET_URL
 DATASET_FILENAME     = _mod.DATASET_FILENAME
 WIKTIONARY_FILENAME  = _mod.WIKTIONARY_FILENAME
@@ -127,7 +129,7 @@ def run_section_a() -> tuple[int, int]:
         print(f"  Save as: {os.path.join(ADDON_DIR, DATASET_FILENAME)}")
         return 0, 1
 
-    entry_count = len(lookup._reading_table)
+    entry_count = len(lookup._reading_entries)
     print(f"OK  ({entry_count:,} unique readings)")
     print(f"  File: {os.path.join(ADDON_DIR, DATASET_FILENAME)}")
     print()
@@ -452,7 +454,7 @@ def run_section_f(lookup: PitchLookup) -> tuple[int, int]:
     passed = failed = 0
 
     # F1: supplement loaded
-    wiki_count = len(lookup._wiki_reading_table)
+    wiki_count = len(lookup._wiki_reading_entries)
     ok = wiki_count > 0
     passed += ok; failed += (not ok)
     _result(
@@ -612,6 +614,89 @@ def run_section_h(lookup: PitchLookup) -> tuple[int, int]:
 
 
 # ===========================================================================
+# Section I — Lookup bug regressions + inline pitch override
+# ===========================================================================
+
+REGRESSION_CASES = [
+    # (expression, reading, expected, note)
+    ("前",   "まえ",   1, "must not use expression-only さき=0"),
+    ("見える", "みえる", 2, "must not use expression-only まみえる=3"),
+    ("道",   "みち",   0, "must not use expression-only どう=1"),
+    ("言う", "いう",   0, "Kanjium database value"),
+    ("開ける", "あける", 0, "Kanjium database value"),
+    ("",     "こう",   1, "kana-only reading fallback"),
+]
+
+INLINE_PITCH_EXTRACT_CASES = [
+    ("ところ[3]", 3, "numeric pitch annotation"),
+    ("いう[2]",   2, "numeric pitch annotation"),
+    ("食[た]べる", None, "kana furigana ignored"),
+]
+
+INLINE_OVERRIDE_CASES = [
+    # (expression, raw_reading, expected, note)
+    ("言う",   "いう[2]",   2, "inline overrides DB 0"),
+    ("開ける", "あける[3]", 3, "inline overrides DB 0"),
+    ("ところ", "ところ[3]", 3, "inline overrides when DB differs"),
+]
+
+
+def _resolve_pitch(expression: str, raw_reading: str, lookup: PitchLookup) -> int | None:
+    """Mirror the add-on's database-first + inline-override logic."""
+    inline = _extract_inline_pitch(raw_reading)
+    reading = _extract_reading(raw_reading)
+    db = lookup.lookup(expression, reading)
+    if db is not None:
+        if inline is not None and inline != db:
+            return inline
+        return db
+    if inline is not None:
+        return inline
+    return None
+
+
+def run_section_i(lookup: PitchLookup) -> tuple[int, int]:
+    _section("I  Lookup bug regressions + inline pitch override")
+    passed = failed = 0
+
+    for expr, reading, expected, note in REGRESSION_CASES:
+        got = lookup.lookup(expr, reading)
+        ok  = got == expected
+        passed += ok; failed += (not ok)
+        _result(
+            f'lookup("{expr}", "{reading}") → {expected}  [{note}]', ok,
+            f"expected {expected}, got {got}" if not ok else "",
+        )
+
+    # Must NOT return 0 via wrong reading when 前+まえ is requested
+    got = lookup.lookup("前", "さき")
+    ok  = got == 0
+    passed += ok; failed += (not ok)
+    _result('lookup("前", "さき") → 0  [correct alternate reading]', ok,
+            f"expected 0, got {got}" if not ok else "")
+
+    for raw, expected, note in INLINE_PITCH_EXTRACT_CASES:
+        got = _extract_inline_pitch(raw)
+        ok  = got == expected
+        passed += ok; failed += (not ok)
+        _result(
+            f'_extract_inline_pitch({raw!r}) → {expected!r}  [{note}]', ok,
+            f"expected {expected!r}, got {got!r}" if not ok else "",
+        )
+
+    for expr, raw, expected, note in INLINE_OVERRIDE_CASES:
+        got = _resolve_pitch(expr, raw, lookup)
+        ok  = got == expected
+        passed += ok; failed += (not ok)
+        _result(
+            f'resolve("{expr}", {raw!r}) → {expected}  [{note}]', ok,
+            f"expected {expected}, got {got}" if not ok else "",
+        )
+
+    return passed, failed
+
+
+# ===========================================================================
 # Runner
 # ===========================================================================
 
@@ -644,6 +729,7 @@ def main() -> int:
         lambda: run_section_f(lookup),
         lambda: run_section_g(lookup),
         lambda: run_section_h(lookup),
+        lambda: run_section_i(lookup),
     ):
         p, f = run_fn()
         total_passed += p

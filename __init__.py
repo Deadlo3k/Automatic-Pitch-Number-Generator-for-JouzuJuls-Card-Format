@@ -44,6 +44,7 @@ from .pitch_lookup import (
     katakana_to_hiragana,
     _extract_expression,
     _extract_reading,
+    _extract_inline_pitch,
 )
 from .compat import (
     get_note,
@@ -370,13 +371,25 @@ def _compute_changes(
             existing += 1
             continue
 
-        reading = _extract_reading(note[reading_field])
+        raw_reading = note[reading_field]
+        inline_pitch = _extract_inline_pitch(raw_reading)
+        reading = _extract_reading(raw_reading)
         if not reading:
             not_found += 1
             continue
 
         expression = _get_expression(note, expr_fields)
-        pitch_num  = lookup.lookup(expression, reading)
+        db_pitch = lookup.lookup(expression, reading)
+
+        if db_pitch is not None:
+            if inline_pitch is not None and inline_pitch != db_pitch:
+                pitch_num = inline_pitch
+            else:
+                pitch_num = db_pitch
+        elif inline_pitch is not None:
+            pitch_num = inline_pitch
+        else:
+            pitch_num = None
 
         if pitch_num is None:
             not_found += 1

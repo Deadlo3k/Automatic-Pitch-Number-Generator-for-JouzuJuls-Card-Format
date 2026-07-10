@@ -9,7 +9,7 @@ from GitHub on first run if the file is not present.
 import os
 import urllib.request
 import urllib.error
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 
 DATASET_URL = (
     "https://raw.githubusercontent.com/mifunetoshiro/kanjium"
@@ -83,14 +83,37 @@ def _parse_pitch(raw: str) -> Optional[int]:
         return None
 
 
+def _lookup_by_reading(
+    entries: Dict[str, List[Tuple[str, int]]],
+    expr_h: str,
+    read_h: str,
+) -> Optional[int]:
+    """
+    Disambiguate homonyms sharing the same reading.
+
+    When expression is present, return the pitch for the matching expression.
+    When expression is empty, return the sole entry if unambiguous, else None.
+    """
+    candidates = entries.get(read_h)
+    if not candidates:
+        return None
+    if expr_h:
+        for expr, pitch in candidates:
+            if expr == expr_h:
+                return pitch
+        return None
+    # Kana-only cards: use first entry (same as legacy reading_table behaviour)
+    return candidates[0][1]
+
+
 class PitchLookup:
     """
     Loads the Kanjium pitch accent dataset and answers lookup queries.
 
     Lookup priority:
       1. (expression, reading) exact match  — O(1)
-      2. expression-only match              — O(1)
-      3. reading-only match                 — O(1)
+      2. reading disambiguation by expression when exact match misses
+      3. reading-only when expression is empty (kana-only cards)
     """
 
     def __init__(self, addon_dir: str):
@@ -100,15 +123,12 @@ class PitchLookup:
         # --- Kanjium tables ---
         # Keys: (expression_hiragana, reading_hiragana) -> pitch_int
         self._expr_table: Dict[Tuple[str, str], int] = {}
-        # Keys: expression_hiragana -> pitch_int  (first match per expression wins)
-        self._expr_only_table: Dict[str, int] = {}
-        # Keys: reading_hiragana -> pitch_int  (first match wins)
-        self._reading_table: Dict[str, int] = {}
+        # Keys: reading_hiragana -> [(expression_hiragana, pitch_int), ...]
+        self._reading_entries: Dict[str, List[Tuple[str, int]]] = {}
 
         # --- Wiktionary supplement tables (fallback) ---
-        self._wiki_expr_table:     Dict[Tuple[str, str], int] = {}
-        self._wiki_expr_only_table: Dict[str, int] = {}
-        self._wiki_reading_table:  Dict[str, int] = {}
+        self._wiki_expr_table: Dict[Tuple[str, str], int] = {}
+        self._wiki_reading_entries: Dict[str, List[Tuple[str, int]]] = {}
 
         self._loaded = False
         self._load()
@@ -128,7 +148,7 @@ class PitchLookup:
     def lookup(self, expression: str, reading: str) -> Optional[int]:
         """
         Return the pitch accent number for (expression, reading), or None if
-        not found.  Falls back to reading-only lookup when expression misses.
+        not found.  Falls back to reading disambiguation when exact match misses.
         """
         if not self._loaded:
             return None
@@ -137,26 +157,18 @@ class PitchLookup:
         read_h = katakana_to_hiragana(_extract_reading(reading))
 
         # 1. Expression + reading exact match — O(1)
-        if expr_h and (expr_h, read_h) in self._expr_table:
+        if expr_h and read_h and (expr_h, read_h) in self._expr_table:
             return self._expr_table[(expr_h, read_h)]
 
-        # 2. Expression-only match — O(1)
-        if expr_h and expr_h in self._expr_only_table:
-            return self._expr_only_table[expr_h]
+        # 2. Reading disambiguation (expression present or kana-only)
+        result = _lookup_by_reading(self._reading_entries, expr_h, read_h)
+        if result is not None:
+            return result
 
-        # 3. Reading-only fallback — O(1)
-        if read_h in self._reading_table:
-            return self._reading_table[read_h]
-
-        # 4–6. Wiktionary supplement fallback (same three-tier priority)
-        if expr_h and (expr_h, read_h) in self._wiki_expr_table:
+        # 3. Wiktionary supplement fallback
+        if expr_h and read_h and (expr_h, read_h) in self._wiki_expr_table:
             return self._wiki_expr_table[(expr_h, read_h)]
-        if expr_h and expr_h in self._wiki_expr_only_table:
-            return self._wiki_expr_only_table[expr_h]
-        if read_h in self._wiki_reading_table:
-            return self._wiki_reading_table[read_h]
-
-        return None
+        return _lookup_by_reading(self._wiki_reading_entries, expr_h, read_h)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -184,10 +196,7 @@ class PitchLookup:
                     read_h = katakana_to_hiragana(read_raw)
 
                     self._expr_table[(expr_h, read_h)] = pitch
-                    if expr_h not in self._expr_only_table:
-                        self._expr_only_table[expr_h] = pitch
-                    if read_h not in self._reading_table:
-                        self._reading_table[read_h] = pitch
+                    self._reading_entries.setdefault(read_h, []).append((expr_h, pitch))
 
             self._loaded = True
         except Exception as e:
@@ -243,10 +252,8 @@ class PitchLookup:
                     continue
                 pitch = positions[0]
                 self._wiki_expr_table[(word, reading)] = pitch
-                if word not in self._wiki_expr_only_table:
-                    self._wiki_expr_only_table[word] = pitch
-                if reading and reading not in self._wiki_reading_table:
-                    self._wiki_reading_table[reading] = pitch
+                if reading:
+                    self._wiki_reading_entries.setdefault(reading, []).append((word, pitch))
         except Exception:
             pass
 
@@ -317,6 +324,22 @@ def _extract_expression(text: str) -> str:
     text = re.sub(r'\{([^|]+)\|[^}]+\}', r'\1', text)   # {kanji|reading} → kanji
     text = re.sub(r'\[([^\]]+)\]', '', text)              # remove [reading] brackets
     return text.strip()
+
+
+def _extract_inline_pitch(text: str) -> Optional[int]:
+    """
+    Extract a numeric pitch annotation from the raw Reading field.
+
+    Handles deck hints like ところ[3] or いう[2].  Ignores kana furigana
+    brackets such as 食[た]べる.  Returns None when no numeric hint is found.
+    """
+    import re
+    text = _strip_html_reading(text)
+    for m in re.finditer(r'[^\s\[]+\[([^\]]+)\]', text):
+        content = m.group(1).strip()
+        if content.isdigit():
+            return int(content)
+    return None
 
 
 def _extract_reading(text: str) -> str:
