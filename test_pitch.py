@@ -17,6 +17,7 @@ F  Wiktionary supplement fallback
 G  Pitch annotation stripping
 H  Ruby HTML stripping (fixes doubled-reading bug)
 I  Lookup bug regressions + inline pitch override
+J  SVG pitch diagram parsing + override
 """
 
 import os
@@ -45,6 +46,7 @@ _strip_html_reading  = _mod._strip_html_reading
 _extract_reading     = _mod._extract_reading
 _extract_expression  = _mod._extract_expression
 _extract_inline_pitch = _mod._extract_inline_pitch
+_extract_svg_pitch    = _mod._extract_svg_pitch
 DATASET_URL          = _mod.DATASET_URL
 DATASET_FILENAME     = _mod.DATASET_FILENAME
 WIKTIONARY_FILENAME  = _mod.WIKTIONARY_FILENAME
@@ -641,18 +643,26 @@ INLINE_OVERRIDE_CASES = [
 ]
 
 
+def _resolve_pitch_values(
+    db_pitch: int | None,
+    inline_pitch: int | None,
+    svg_pitch: int | None,
+) -> int | None:
+    """Mirror the add-on's database-first + deck-hint override logic."""
+    deck_pitch = svg_pitch if svg_pitch is not None else inline_pitch
+    if db_pitch is not None:
+        if deck_pitch is not None and deck_pitch != db_pitch:
+            return deck_pitch
+        return db_pitch
+    return deck_pitch
+
+
 def _resolve_pitch(expression: str, raw_reading: str, lookup: PitchLookup) -> int | None:
-    """Mirror the add-on's database-first + inline-override logic."""
     inline = _extract_inline_pitch(raw_reading)
+    svg = _extract_svg_pitch(raw_reading)
     reading = _extract_reading(raw_reading)
     db = lookup.lookup(expression, reading)
-    if db is not None:
-        if inline is not None and inline != db:
-            return inline
-        return db
-    if inline is not None:
-        return inline
-    return None
+    return _resolve_pitch_values(db, inline, svg)
 
 
 def run_section_i(lookup: PitchLookup) -> tuple[int, int]:
@@ -697,6 +707,106 @@ def run_section_i(lookup: PitchLookup) -> tuple[int, int]:
 
 
 # ===========================================================================
+# Section J — SVG pitch diagram parsing + override
+# ===========================================================================
+
+OKU_SVG_READING = (
+    '<font color="#ffa500">おく</font><!-- user_accent_start -->'
+    '<br><hr><br>'
+    '<svg class="pitch" width="102px" height="75px" viewBox="0 0 102 75">'
+    '<text x="5" y="67.5">お</text>'
+    '<text x="40" y="67.5">く</text>'
+    '<circle r="5" cx="16" cy="30" style="opacity:1;fill:#000;"></circle>'
+    '<circle r="5" cx="51" cy="5" style="opacity:1;fill:#000;"></circle>'
+    '<circle r="5" cx="86" cy="30" style="opacity:1;fill:#000;"></circle>'
+    '<circle r="3.25" cx="86" cy="30" style="opacity:1;fill:#fff;"></circle>'
+    '</svg><!-- user_accent_end -->'
+)
+
+HEIBAN_SVG = (
+    '<!-- user_accent_start --><svg>'
+    '<text x="5">あ</text><text x="40">め</text>'
+    '<circle cx="16" cy="30" fill="#000"/>'
+    '<circle cx="51" cy="5" fill="#000"/>'
+    '<circle cx="86" cy="5" fill="#fff"/>'
+    '</svg><!-- user_accent_end -->'
+)
+
+ATAMADAKA_SVG = (
+    '<!-- user_accent_start --><svg>'
+    '<text x="5">あ</text><text x="40">め</text>'
+    '<circle cx="16" cy="5" fill="#000"/>'
+    '<circle cx="51" cy="30" fill="#000"/>'
+    '<circle cx="86" cy="30" fill="#fff"/>'
+    '</svg><!-- user_accent_end -->'
+)
+
+IU_ODAKA_SVG = (
+    '<!-- user_accent_start --><svg>'
+    '<text x="5">い</text><text x="40">う</text>'
+    '<circle cx="16" cy="30" fill="#000"/>'
+    '<circle cx="51" cy="5" fill="#000"/>'
+    '<circle cx="86" cy="30" fill="#fff"/>'
+    '</svg><!-- user_accent_end -->'
+)
+
+AKERU_ODAKA_SVG = (
+    '<!-- user_accent_start --><svg>'
+    '<text x="5">あ</text><text x="35">け</text><text x="65">る</text>'
+    '<circle cx="16" cy="30" fill="#000"/>'
+    '<circle cx="46" cy="5" fill="#000"/>'
+    '<circle cx="76" cy="5" fill="#000"/>'
+    '<circle cx="96" cy="30" fill="#fff"/>'
+    '</svg><!-- user_accent_end -->'
+)
+
+
+def run_section_j(lookup: PitchLookup) -> tuple[int, int]:
+    _section("J  SVG pitch diagram parsing + override")
+    passed = failed = 0
+
+    svg_extract_cases = [
+        (OKU_SVG_READING, 2, "置く sample — odaka on particle"),
+        (HEIBAN_SVG,      0, "synthetic heiban L-H-H"),
+        (ATAMADAKA_SVG,   1, "synthetic atamadaka H-L-L"),
+        (IU_ODAKA_SVG,    2, "synthetic 2-mora odaka"),
+        (AKERU_ODAKA_SVG, 3, "synthetic 3-mora odaka"),
+    ]
+    for raw, expected, note in svg_extract_cases:
+        got = _extract_svg_pitch(raw)
+        ok  = got == expected
+        passed += ok; failed += (not ok)
+        _result(
+            f'_extract_svg_pitch(...) → {expected}  [{note}]', ok,
+            f"expected {expected}, got {got}" if not ok else "",
+        )
+
+    svg_override_cases = [
+        ("置く", OKU_SVG_READING, 2, "SVG overrides DB 0 for 置く/おく"),
+        ("言う", IU_ODAKA_SVG,    2, "SVG overrides DB 0 for 言う/いう"),
+        ("開ける", AKERU_ODAKA_SVG, 3, "SVG overrides DB 0 for 開ける/あける"),
+    ]
+    for expr, raw, expected, note in svg_override_cases:
+        got = _resolve_pitch(expr, raw, lookup)
+        ok  = got == expected
+        passed += ok; failed += (not ok)
+        _result(
+            f'resolve("{expr}", svg) → {expected}  [{note}]', ok,
+            f"expected {expected}, got {got}" if not ok else "",
+        )
+
+    # SVG takes priority over inline when both present and DB differs
+    combined = IU_ODAKA_SVG.replace("<!-- user_accent_end -->", "いう[9]<!-- user_accent_end -->")
+    got = _resolve_pitch_values(lookup.lookup("言う", "いう"), 9, _extract_svg_pitch(combined))
+    ok  = got == 2
+    passed += ok; failed += (not ok)
+    _result("SVG wins over inline [9] when both present", ok,
+            f"expected 2, got {got}" if not ok else "")
+
+    return passed, failed
+
+
+# ===========================================================================
 # Runner
 # ===========================================================================
 
@@ -730,6 +840,7 @@ def main() -> int:
         lambda: run_section_g(lookup),
         lambda: run_section_h(lookup),
         lambda: run_section_i(lookup),
+        lambda: run_section_j(lookup),
     ):
         p, f = run_fn()
         total_passed += p

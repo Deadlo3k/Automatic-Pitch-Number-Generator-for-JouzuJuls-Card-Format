@@ -326,6 +326,122 @@ def _extract_expression(text: str) -> str:
     return text.strip()
 
 
+def _classify_pitch_from_heights(mora_cys: list[float], particle_cy: float) -> Optional[int]:
+    """Derive a Tokyo-style pitch number from SVG mora/particle circle heights."""
+    n = len(mora_cys)
+    if n == 0:
+        return None
+
+    all_cys = mora_cys + [particle_cy]
+    lo, hi = min(all_cys), max(all_cys)
+    if lo == hi:
+        return None
+    threshold = (lo + hi) / 2
+
+    def is_high(cy: float) -> bool:
+        return cy < threshold
+
+    mora_h = [is_high(cy) for cy in mora_cys]
+    part_h = is_high(particle_cy)
+
+    # Atamadaka — first mora high, the rest low
+    if mora_h[0] and not any(mora_h[1:]):
+        return 1
+
+    # Heiban — last mora and particle both high
+    if mora_h[-1] and part_h:
+        return 0
+
+    # Odaka — last mora high, particle low
+    if mora_h[-1] and not part_h:
+        return n
+
+    # Nakadaka — drop after mora k inside the word
+    for k in range(1, n):
+        if mora_h[k - 1] and not mora_h[k]:
+            return k
+
+    return None
+
+
+def _extract_svg_pitch(text: str) -> Optional[int]:
+    """
+    Extract pitch number from a JouzuJuls SVG diagram embedded in the Reading field.
+
+    Parses the block between <!-- user_accent_start --> and <!-- user_accent_end -->,
+    reads mora <text> positions and <circle> heights, and derives the pitch accent
+    number (0 = Heiban, 1 = Atamadaka, 2..n-1 = Nakadaka, n = Odaka).
+    """
+    import re
+
+    block_m = re.search(
+        r'<!--\s*user_accent_start\s*-->(.*?)<!--\s*user_accent_end\s*-->',
+        text, re.DOTALL | re.IGNORECASE,
+    )
+    if not block_m:
+        return None
+    block = block_m.group(1)
+    if '<svg' not in block.lower():
+        return None
+
+    texts: list[tuple[float, str]] = []
+    for tm in re.finditer(
+        r'<text[^>]*\bx="([^"]+)"[^>]*>([^<]*)</text>',
+        block, re.IGNORECASE,
+    ):
+        texts.append((float(tm.group(1)), tm.group(2).strip()))
+    texts.sort(key=lambda t: t[0])
+    if not texts:
+        return None
+
+    black_circles: list[tuple[float, float]] = []
+    particle_cy: Optional[float] = None
+    for cm in re.finditer(
+        r'<circle\b([^>]*)/?>',
+        block, re.IGNORECASE,
+    ):
+        attrs = cm.group(1)
+        cx_m = re.search(r'\bcx="([^"]+)"', attrs, re.I)
+        cy_m = re.search(r'\bcy="([^"]+)"', attrs, re.I)
+        if not cx_m or not cy_m:
+            continue
+        cx = float(cx_m.group(1))
+        cy = float(cy_m.group(1))
+        is_white = bool(re.search(
+            r'fill\s*:\s*#fff(?:fff)?|fill="#fff(?:fff)?"|fill=\'#fff(?:fff)?\'',
+            attrs, re.I,
+        ))
+        if is_white:
+            particle_cy = cy
+        else:
+            black_circles.append((cx, cy))
+
+    if particle_cy is None or not black_circles:
+        return None
+
+    mora_cys: list[float] = []
+    used: set[int] = set()
+    for tx, _ in texts:
+        best_i: Optional[int] = None
+        best_dist: Optional[float] = None
+        for i, (bx, by) in enumerate(black_circles):
+            if i in used:
+                continue
+            dist = abs(bx - tx)
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_i = i
+        if best_i is None:
+            return None
+        used.add(best_i)
+        mora_cys.append(black_circles[best_i][1])
+
+    if len(mora_cys) != len(texts):
+        return None
+
+    return _classify_pitch_from_heights(mora_cys, particle_cy)
+
+
 def _extract_inline_pitch(text: str) -> Optional[int]:
     """
     Extract a numeric pitch annotation from the raw Reading field.

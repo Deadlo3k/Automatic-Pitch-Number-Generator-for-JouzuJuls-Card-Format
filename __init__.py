@@ -45,6 +45,7 @@ from .pitch_lookup import (
     _extract_expression,
     _extract_reading,
     _extract_inline_pitch,
+    _extract_svg_pitch,
 )
 from .compat import (
     get_note,
@@ -325,6 +326,20 @@ def _ensure_lookup_ready() -> tuple[PitchLookup | None, bool]:
     return lookup, True
 
 
+def _resolve_pitch(
+    db_pitch: int | None,
+    inline_pitch: int | None,
+    svg_pitch: int | None,
+) -> int | None:
+    """Database first; deck hint (SVG or inline) wins on conflict."""
+    deck_pitch = svg_pitch if svg_pitch is not None else inline_pitch
+    if db_pitch is not None:
+        if deck_pitch is not None and deck_pitch != db_pitch:
+            return deck_pitch
+        return db_pitch
+    return deck_pitch
+
+
 def _compute_changes(
     deck_name: str,
     overwrite: bool,
@@ -373,6 +388,7 @@ def _compute_changes(
 
         raw_reading = note[reading_field]
         inline_pitch = _extract_inline_pitch(raw_reading)
+        svg_pitch = _extract_svg_pitch(raw_reading)
         reading = _extract_reading(raw_reading)
         if not reading:
             not_found += 1
@@ -380,16 +396,7 @@ def _compute_changes(
 
         expression = _get_expression(note, expr_fields)
         db_pitch = lookup.lookup(expression, reading)
-
-        if db_pitch is not None:
-            if inline_pitch is not None and inline_pitch != db_pitch:
-                pitch_num = inline_pitch
-            else:
-                pitch_num = db_pitch
-        elif inline_pitch is not None:
-            pitch_num = inline_pitch
-        else:
-            pitch_num = None
+        pitch_num = _resolve_pitch(db_pitch, inline_pitch, svg_pitch)
 
         if pitch_num is None:
             not_found += 1
